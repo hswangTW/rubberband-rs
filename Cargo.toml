@@ -1,0 +1,16 @@
+[workspace]
+members = ["rubberband-sys"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Han-Sheng Wang <hanson2693@gmail.com>"]
+
+[package]
+name = "rubberband"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+rubberband-sys = { path = "rubberband-sys" }
