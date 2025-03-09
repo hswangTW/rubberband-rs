@@ -7,3 +7,6 @@ authors.workspace = true
 [build-dependencies]
 bindgen = "0.71.1"
 cc = "1.2.16"
+
+[dev-dependencies]
+approx = "0.5.1"

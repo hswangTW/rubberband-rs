@@ -8,8 +8,9 @@ fn main() {
     // Build the single-file version
     let mut build = cc::Build::new();
     build.cpp(true)
-        .file(format!("{}/single/RubberBandSingle.cpp", rubberband_src.display()));
-    build.flag_if_supported("-std=c++11");
+        .file(format!("{}/single/RubberBandSingle.cpp", rubberband_src.display()))
+        .flag_if_supported("-std=c++11")
+        .flag_if_supported("-Wno-unused-parameter");
 
     // On Apple platforms, the single file build would use vDSP for FFT by default.
     // Therefore, we need to link the Accelerate framework.
