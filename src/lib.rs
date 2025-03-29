@@ -26,7 +26,7 @@ use rubberband_sys::{
 
 /// Window size options for the live pitch shifter.
 #[derive(Debug, Clone, Copy)]
-pub enum RubberBandLiveShifterWindow {
+pub enum LiveShifterWindow {
     /// Short window, which is the default option.
     Short,
     /// Medium window, enabling the read ahead feature in R3 (Live Shifter) engine.
@@ -35,7 +35,7 @@ pub enum RubberBandLiveShifterWindow {
 
 /// Formant preservation options for the live pitch shifter.
 #[derive(Debug, Clone, Copy)]
-pub enum RubberBandLiveShifterFormant {
+pub enum LiveShifterFormant {
     /// No formant preservation, formants are shifted with the pitch. Default option.
     Shifted,
     /// With formant preservation, trying to preserve the formant and hence the timbre.
@@ -44,7 +44,7 @@ pub enum RubberBandLiveShifterFormant {
 
 /// Channel processing mode for the live pitch shifter.
 #[derive(Debug, Clone, Copy)]
-pub enum RubberBandLiveShifterChannelMode {
+pub enum LiveShifterChannelMode {
     /// Process channels independently. Gives the best quality for individual channels but a more
     /// diffuse stereo image. Default option.
     Apart,
@@ -53,17 +53,17 @@ pub enum RubberBandLiveShifterChannelMode {
     Together,
 }
 
-/// Builder for configuring and creating a RubberBandLiveShifter instance.
-pub struct RubberBandLiveShifterBuilder {
+/// Builder for configuring and creating a LiveShifter instance.
+pub struct LiveShifterBuilder {
     sample_rate: u32,
     channels: u32,
-    window: RubberBandLiveShifterWindow,
-    formant: RubberBandLiveShifterFormant,
-    channel_mode: RubberBandLiveShifterChannelMode,
+    window: LiveShifterWindow,
+    formant: LiveShifterFormant,
+    channel_mode: LiveShifterChannelMode,
     debug_level: i32,
 }
 
-impl RubberBandLiveShifterBuilder {
+impl LiveShifterBuilder {
     pub fn new(sample_rate: u32, channels: u32) -> Result<Self, RubberBandError> {
         if sample_rate == 0 {
             return Err(RubberBandError::UnsupportedSampleRate(sample_rate));
@@ -74,24 +74,24 @@ impl RubberBandLiveShifterBuilder {
         Ok(Self {
             sample_rate,
             channels,
-            window: RubberBandLiveShifterWindow::Short,
-            formant: RubberBandLiveShifterFormant::Shifted,
-            channel_mode: RubberBandLiveShifterChannelMode::Apart,
+            window: LiveShifterWindow::Short,
+            formant: LiveShifterFormant::Shifted,
+            channel_mode: LiveShifterChannelMode::Apart,
             debug_level: 0,
         })
     }
 
-    pub fn window(mut self, window: RubberBandLiveShifterWindow) -> Self {
+    pub fn window(mut self, window: LiveShifterWindow) -> Self {
         self.window = window;
         self
     }
 
-    pub fn formant(mut self, formant: RubberBandLiveShifterFormant) -> Self {
+    pub fn formant(mut self, formant: LiveShifterFormant) -> Self {
         self.formant = formant;
         self
     }
 
-    pub fn channel_mode(mut self, channel_mode: RubberBandLiveShifterChannelMode) -> Self {
+    pub fn channel_mode(mut self, channel_mode: LiveShifterChannelMode) -> Self {
         self.channel_mode = channel_mode;
         self
     }
@@ -101,19 +101,19 @@ impl RubberBandLiveShifterBuilder {
         self
     }
 
-    pub fn build(self) -> RubberBandLiveShifter {
+    pub fn build(self) -> LiveShifter {
         let mut options: RubberBandLiveOption = 0; // Default options
         match self.window {
-            RubberBandLiveShifterWindow::Short => options |= OPTION_BITS_WINDOW_SHORT,
-            RubberBandLiveShifterWindow::Medium => options |= OPTION_BITS_WINDOW_MEDIUM,
+            LiveShifterWindow::Short => options |= OPTION_BITS_WINDOW_SHORT,
+            LiveShifterWindow::Medium => options |= OPTION_BITS_WINDOW_MEDIUM,
         }
         match self.formant {
-            RubberBandLiveShifterFormant::Shifted => options |= OPTION_BITS_FORMANT_SHIFTED,
-            RubberBandLiveShifterFormant::Preserved => options |= OPTION_BITS_FORMANT_PRESERVED,
+            LiveShifterFormant::Shifted => options |= OPTION_BITS_FORMANT_SHIFTED,
+            LiveShifterFormant::Preserved => options |= OPTION_BITS_FORMANT_PRESERVED,
         }
         match self.channel_mode {
-            RubberBandLiveShifterChannelMode::Apart => options |= OPTION_BITS_CHANNELS_APART,
-            RubberBandLiveShifterChannelMode::Together => options |= OPTION_BITS_CHANNELS_TOGETHER,
+            LiveShifterChannelMode::Apart => options |= OPTION_BITS_CHANNELS_APART,
+            LiveShifterChannelMode::Together => options |= OPTION_BITS_CHANNELS_TOGETHER,
         }
 
         let state: RubberBandLiveState = unsafe {
@@ -126,7 +126,7 @@ impl RubberBandLiveShifterBuilder {
             state
         };
 
-        RubberBandLiveShifter {
+        LiveShifter {
             state,
             sample_rate: self.sample_rate,
         }
@@ -137,12 +137,12 @@ impl RubberBandLiveShifterBuilder {
 ///
 /// This is a wrapper around the RubberBandLiveShifter, providing realtime-safe pitch shifting with
 /// optional formant preservation and several other options.
-pub struct RubberBandLiveShifter {
+pub struct LiveShifter {
     state: RubberBandLiveState,
     sample_rate: u32,
 }
 
-/// Error types for RubberBandLiveShifter operations
+/// Error types for RubberBand operations
 #[derive(Debug, Error)]
 pub enum RubberBandError {
     #[error("Unsupported sample rate: {0}")]
@@ -162,7 +162,7 @@ pub enum RubberBandError {
     },
 }
 
-impl RubberBandLiveShifter {
+impl LiveShifter {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -191,10 +191,10 @@ impl RubberBandLiveShifter {
         }
     }
 
-    pub fn set_formant_option(&mut self, option: RubberBandLiveShifterFormant) {
+    pub fn set_formant_option(&mut self, option: LiveShifterFormant) {
         let option_bits = match option {
-            RubberBandLiveShifterFormant::Shifted => OPTION_BITS_FORMANT_SHIFTED,
-            RubberBandLiveShifterFormant::Preserved => OPTION_BITS_FORMANT_PRESERVED,
+            LiveShifterFormant::Shifted => OPTION_BITS_FORMANT_SHIFTED,
+            LiveShifterFormant::Preserved => OPTION_BITS_FORMANT_PRESERVED,
         };
         unsafe {
             rubberband_live_set_formant_option(
@@ -230,8 +230,7 @@ impl RubberBandLiveShifter {
     ///
     /// - `input`: A slice of slices of floats, each containing a contiguous block of audio
     ///            samples for a single channel. The number of channels must be equal to the number
-    ///            of channels of the RubberBandLiveShifter. Each channel must have the same number
-    ///            of samples.
+    ///            of channels of the LiveShifter. Each channel must have the same number of samples.
     ///
     /// Returns:
     ///
@@ -255,8 +254,7 @@ impl RubberBandLiveShifter {
     ///
     /// - `input`: A slice of slices of floats, each containing a contiguous block of audio
     ///            samples for a single channel. The number of channels must be equal to the number
-    ///            of channels of the RubberBandLiveShifter. Each channel must have the same number
-    ///            of samples.
+    ///            of channels of the LiveShifter. Each channel must have the same number of samples.
     /// - `output`: A slice of slices of floats, should have the same shape as the input.
     pub fn process_into(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         let channel_count = self.channel_count() as usize;
@@ -323,7 +321,7 @@ impl RubberBandLiveShifter {
     }
 }
 
-impl Drop for RubberBandLiveShifter {
+impl Drop for LiveShifter {
     fn drop(&mut self) {
         unsafe { rubberband_live_delete(self.state) };
     }
@@ -335,7 +333,7 @@ mod tests {
 
     #[test]
     fn test_builder_basic_creation() {
-        let shifter = RubberBandLiveShifterBuilder::new(44100, 2)
+        let shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -346,8 +344,8 @@ mod tests {
 
     #[test]
     fn test_builder_invalid_params() {
-        assert!(RubberBandLiveShifterBuilder::new(0, 2).is_err());
-        assert!(RubberBandLiveShifterBuilder::new(44100, 0).is_err());
+        assert!(LiveShifterBuilder::new(0, 2).is_err());
+        assert!(LiveShifterBuilder::new(44100, 0).is_err());
     }
 
     /// Check if the window option works as expected, by comparing the start delay values with the
@@ -355,8 +353,8 @@ mod tests {
     #[test]
     fn test_builder_window_option() {
         // Test start delay values for different sample rates and window options
-        fn check_start_delay(sample_rate: u32, window: RubberBandLiveShifterWindow, expected_delay: u32) {
-            let shifter = RubberBandLiveShifterBuilder::new(sample_rate, 1)
+        fn check_start_delay(sample_rate: u32, window: LiveShifterWindow, expected_delay: u32) {
+            let shifter = LiveShifterBuilder::new(sample_rate, 1)
                 .unwrap()
                 .window(window)
                 .build();
@@ -364,14 +362,14 @@ mod tests {
         }
 
         // Test common sample rates with Short window
-        check_start_delay(44100, RubberBandLiveShifterWindow::Short, 2112);
-        check_start_delay(48000, RubberBandLiveShifterWindow::Short, 2112);
-        check_start_delay(96000, RubberBandLiveShifterWindow::Short, 4160);
+        check_start_delay(44100, LiveShifterWindow::Short, 2112);
+        check_start_delay(48000, LiveShifterWindow::Short, 2112);
+        check_start_delay(96000, LiveShifterWindow::Short, 4160);
 
         // Test common sample rates with Medium window
-        check_start_delay(44100, RubberBandLiveShifterWindow::Medium, 2624);
-        check_start_delay(48000, RubberBandLiveShifterWindow::Medium, 2624);
-        check_start_delay(96000, RubberBandLiveShifterWindow::Medium, 5184);
+        check_start_delay(44100, LiveShifterWindow::Medium, 2624);
+        check_start_delay(48000, LiveShifterWindow::Medium, 2624);
+        check_start_delay(96000, LiveShifterWindow::Medium, 5184);
     }
 
     #[test]
@@ -379,7 +377,7 @@ mod tests {
         // The block size should be fixed at 512 frames (samples per channel), independent of the
         // sample rate.
         for sample_rate in [16000, 44100, 48000, 96000, 192000] {
-            let shifter = RubberBandLiveShifterBuilder::new(sample_rate, 1)
+            let shifter = LiveShifterBuilder::new(sample_rate, 1)
                 .unwrap()
                 .build();
             assert_eq!(shifter.block_size(), 512);
@@ -388,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_pitch_scale() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 1)
+        let mut shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -402,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_formant_scale() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 1)
+        let mut shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -416,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_channels() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 2)
+        let mut shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -432,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_block_size() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 1)
+        let mut shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -448,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_process_valid_input() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 1)
+        let mut shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -466,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_process_into() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 2)
+        let mut shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -482,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut shifter = RubberBandLiveShifterBuilder::new(44100, 1)
+        let mut shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -516,7 +514,7 @@ mod tests {
         let sample_rate: u32 = 44100;
 
         // Set the pitch scale to 2.0 (one octave up)
-        let mut shifter = RubberBandLiveShifterBuilder::new(sample_rate, 1)
+        let mut shifter = LiveShifterBuilder::new(sample_rate, 1)
             .unwrap()
             .build();
         shifter.set_pitch_scale(2.0);
