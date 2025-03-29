@@ -14,3 +14,4 @@ authors.workspace = true
 
 [dependencies]
 rubberband-sys = { path = "rubberband-sys" }
+thiserror = "2.0.12"
