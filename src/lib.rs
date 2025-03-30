@@ -179,6 +179,96 @@ impl LiveShifter {
         }
     }
 
+    /// Set the pitch shift in semitones.
+    ///
+    /// A positive value shifts the pitch up, while a negative value shifts it down.
+    /// One semitone is 1/12th of an octave.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rubberband_rs::LiveShifterBuilder;
+    ///
+    /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
+    ///
+    /// // Shift up by one octave
+    /// shifter.set_pitch_semitone(12.0);
+    /// ```
+    pub fn set_pitch_semitone(&mut self, semitones: f64) {
+        // Convert semitones to pitch ratio: ratio = 2^(semitones/12)
+        let scale = 2.0f64.powf(semitones / 12.0);
+        self.set_pitch_scale(scale);
+    }
+
+    /// Get the current pitch shift in semitones.
+    ///
+    /// A positive value indicates pitch shifted up, while a negative value indicates pitch shifted
+    /// down.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rubberband_rs::LiveShifterBuilder;
+    ///
+    /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
+    ///
+    /// // Initially no pitch shift
+    /// assert_eq!(shifter.pitch_semitone(), 0.0);
+    ///
+    /// // Set pitch shift to one octave up
+    /// shifter.set_pitch_semitone(12.0);
+    /// assert_eq!(shifter.pitch_semitone(), 12.0);
+    /// ```
+    pub fn pitch_semitone(&self) -> f64 {
+        // Convert pitch ratio to semitones: semitones = 12 * log2(ratio)
+        12.0 * self.pitch_scale().log2()
+    }
+
+    /// Set the pitch shift in cents.
+    ///
+    /// A positive value shifts the pitch up, while a negative value shifts it down.
+    /// One cent is 1/100th of a semitone, or 1/1200th of an octave.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rubberband_rs::LiveShifterBuilder;
+    ///
+    /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
+    ///
+    /// // Fine-tune up by 5 cents
+    /// shifter.set_pitch_cent(5.0);
+    ///
+    /// // Fine-tune down by 2 cents
+    /// shifter.set_pitch_cent(-2.0);
+    /// ```
+    pub fn set_pitch_cent(&mut self, cents: f64) {
+        // Convert cents to pitch ratio: ratio = 2^(cents/1200)
+        let scale = 2.0f64.powf(cents / 1200.0);
+        self.set_pitch_scale(scale);
+    }
+
+    /// Get the current pitch shift in cents.
+    ///
+    /// A positive value indicates pitch shifted up, while a negative value indicates pitch shifted
+    /// down. One cent is 1/100th of a semitone, or 1/1200th of an octave.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rubberband_rs::LiveShifterBuilder;
+    ///
+    /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
+    ///
+    /// // Fine-tune up by 5 cents
+    /// shifter.set_pitch_cent(105.0);
+    /// assert_eq!(shifter.pitch_cent(), 105.0);
+    /// ```
+    pub fn pitch_cent(&self) -> f64 {
+        // Convert pitch ratio to cents: cents = 1200 * log2(ratio)
+        1200.0 * self.pitch_scale().log2()
+    }
+
     pub fn set_formant_scale(&mut self, scale: f64) {
         unsafe {
             rubberband_live_set_formant_scale(self.state, scale);
