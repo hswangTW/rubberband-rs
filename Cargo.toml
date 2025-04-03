@@ -15,3 +15,6 @@ authors.workspace = true
 [dependencies]
 rubberband-sys = { path = "rubberband-sys" }
 thiserror = "2.0.12"
+
+[dev-dependencies]
+approx = "0.5.0"
