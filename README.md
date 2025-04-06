@@ -6,15 +6,19 @@ A Rust binding for [Rubber Band](https://breakfastquay.com/rubberband/), a high-
 
 This crate currently provides a binding for the `RubberBandLiveShifter` API only. The more general `RubberBandStretcher` API, which supports both time-stretching and pitch-shifting, is not yet implemented.
 
+> [!NOTE]
+>
+> Currently, it is still not possible to use `LiveShifter` in multiple threads concurrently. The `Send` and `Sync` traits would be implemented after the thread-safety of `LiveShifter` is ensured.
+
 ## Features
 
 ### Original Rubber Band Features
 
 - High-quality and real-time safe pitch shifting algorithm
-- Thread safety for multiple instances in separate threads
 - Formant preservation for natural-sounding pitch shifts (without changing the timbre)
 - Configurable window size options for different latency/quality trade-offs
 - Channel processing modes for stereo image/fidelity trade-offs
+- (TODO) Thread safety for multiple instances in separate threads
 
 ### Rust Binding Features
 
@@ -46,33 +50,13 @@ let input_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
 let output = shifter.process(&input_slices).unwrap();
 ```
 
-## Thread Safety Considerations
-
-As a Rust binding, the `LiveShifter` struct inherits the following thread safety properties guaranteed in the original Rubber Band documentation:
-
-1. Multiple instances of `LiveShifter` may be created and used in separate threads concurrently.
-
-2. It is safe to call `set_formant_option()` concurrently with `process()` or `process_into()`.
-
-On the other hand, you still need to take care of the following:
-
-1. For any single instance:
-
-   - You may not call `process()` or `process_into()` more than once concurrently.
-   - You may not change the pitch scaling ratio (using `set_pitch_scale()`, `set_pitch_semitone()`, or `set_pitch_cent()`) while a process call is being executed.
-
-2. The thread safety of the following methods has not been mentioned in the original documentation and needs further investigation:
-
-   - `set_formant_scale()`
-   - `reset()`
-
 ## Performance Considerations
 
 Although `LiveShifter` has a lower latency than the general `RubberBandStretcher`, it is not a low-latency effect, with a delay of about 50 ms between input and output signals depending on configuration. The actual delay can be queried via `start_delay()`
 
 ## To-do
 
-- [ ] Ensure the thread-safety of `LiveShifter`.
+- [ ] Make `LiveShifter` thread-safe.
 - [ ] Implement `Stretcher` struct for `RubberBandStretcher` class.
 - [ ] Add tests for `Stretcher`.
 
