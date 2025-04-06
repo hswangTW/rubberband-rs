@@ -234,6 +234,7 @@ impl LiveShifterBuilder {
 
         LiveShifter {
             state,
+            process_mutex: std::sync::Mutex::new(()),
             sample_rate: self.sample_rate,
         }
     }
@@ -273,7 +274,8 @@ impl LiveShifterBuilder {
 /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
 /// ```
 pub struct LiveShifter {
-    state: RubberBandLiveState,
+    state: *mut rubberband_sys::RubberBandLiveState_,
+    process_mutex: std::sync::Mutex<()>,
     sample_rate: u32,
 }
 
@@ -339,7 +341,7 @@ impl LiveShifter {
     /// // Shift up by one octave
     /// shifter.set_pitch_scale(2.0);
     /// ```
-    pub fn set_pitch_scale(&mut self, scale: f64) {
+    pub fn set_pitch_scale(&self, scale: f64) {
         unsafe {
             rubberband_live_set_pitch_scale(self.state, scale);
         }
@@ -403,7 +405,7 @@ impl LiveShifter {
     /// // Shift down by one semitone
     /// shifter.set_pitch_semitone(-1.0);
     /// ```
-    pub fn set_pitch_semitone(&mut self, semitones: f64) {
+    pub fn set_pitch_semitone(&self, semitones: f64) {
         let scale = 2.0f64.powf(semitones / 12.0);
         self.set_pitch_scale(scale);
     }
@@ -463,7 +465,7 @@ impl LiveShifter {
     /// // Fine-tune down by 2 cents
     /// shifter.set_pitch_cent(-2.0);
     /// ```
-    pub fn set_pitch_cent(&mut self, cents: f64) {
+    pub fn set_pitch_cent(&self, cents: f64) {
         // Convert cents to pitch ratio: ratio = 2^(cents/1200)
         let scale = 2.0f64.powf(cents / 1200.0);
         self.set_pitch_scale(scale);
@@ -516,7 +518,7 @@ impl LiveShifter {
     /// # Arguments
     ///
     /// * `scale`: The formant scale of the [LiveShifter].
-    pub fn set_formant_scale(&mut self, scale: f64) {
+    pub fn set_formant_scale(&self, scale: f64) {
         unsafe {
             rubberband_live_set_formant_scale(self.state, scale);
         }
@@ -558,7 +560,7 @@ impl LiveShifter {
     /// // Change the formant option
     /// shifter.set_formant_option(LiveShifterFormant::Preserved);
     /// ```
-    pub fn set_formant_option(&mut self, option: LiveShifterFormant) {
+    pub fn set_formant_option(&self, option: LiveShifterFormant) {
         let option_bits = match option {
             LiveShifterFormant::Shifted => OPTION_BITS_FORMANT_SHIFTED,
             LiveShifterFormant::Preserved => OPTION_BITS_FORMANT_PRESERVED,
@@ -629,7 +631,7 @@ impl LiveShifter {
     ///
     /// - The number of input channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
-    pub fn process(&mut self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
+    pub fn process(&self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
         let mut output = vec![vec![0.0; input[0].len()]; input.len()];
         let mut output_slices: Vec<&mut [f32]> = output
             .iter_mut()
@@ -659,7 +661,7 @@ impl LiveShifter {
     ///
     /// - The number of input/output channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
-    pub fn process_into(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
+    pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         let channel_count = self.channel_count() as usize;
         if input.len() != channel_count {
             return Err(RubberBandError::InconsistentChannelCount {
@@ -717,7 +719,7 @@ impl LiveShifter {
     ///
     /// Note that this function would not affect the parameters. Instead, it just make the live
     /// shifter forget the previous input and output.
-    pub fn reset(&mut self) {
+    pub fn reset(&self) {
         unsafe {
             rubberband_live_reset(self.state);
         }
@@ -738,7 +740,7 @@ impl LiveShifter {
     /// # Arguments
     ///
     /// * `level`: The debug level of the live pitch shifter.
-    pub fn set_debug_level(&mut self, level: i32) {
+    pub fn set_debug_level(&self, level: i32) {
         unsafe {
             rubberband_live_set_debug_level(self.state, level);
         }
@@ -750,6 +752,9 @@ impl Drop for LiveShifter {
         unsafe { rubberband_live_delete(self.state) };
     }
 }
+
+unsafe impl Send for LiveShifter {}
+unsafe impl Sync for LiveShifter {}
 
 #[cfg(test)]
 mod tests {
@@ -799,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_channels() {
-        let mut shifter = LiveShifterBuilder::new(44100, 2)
+        let shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -815,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_block_size() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -831,7 +836,7 @@ mod tests {
 
     #[test]
     fn test_process_valid_input() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -849,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_process_into() {
-        let mut shifter = LiveShifterBuilder::new(44100, 2)
+        let shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -865,7 +870,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -899,7 +904,7 @@ mod tests {
         let sample_rate: u32 = 44100;
 
         // Set the pitch scale to 2.0 (one octave up)
-        let mut shifter = LiveShifterBuilder::new(sample_rate, 1)
+        let shifter = LiveShifterBuilder::new(sample_rate, 1)
             .unwrap()
             .build();
         shifter.set_pitch_scale(2.0);
