@@ -304,6 +304,10 @@ pub enum RubberBandError {
         expected: usize,
         actual: usize,
     },
+
+    /// The process call is already in progress.
+    #[error("Process call already in progress")]
+    ProcessInProgress,
 }
 
 impl LiveShifter {
@@ -661,7 +665,14 @@ impl LiveShifter {
     ///
     /// - The number of input/output channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
+    /// - Another `process_into` or `process` call is in progress
     pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
+        // The underlying C++ implementation does not allow concurrent calls to `shift()`.
+        let lock = self.process_mutex.try_lock();
+        if lock.is_err() {
+            return Err(RubberBandError::ProcessInProgress);
+        }
+
         let channel_count = self.channel_count() as usize;
         if input.len() != channel_count {
             return Err(RubberBandError::InconsistentChannelCount {
