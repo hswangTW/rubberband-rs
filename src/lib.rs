@@ -23,6 +23,7 @@ use rubberband_sys::{
     RubberBandLiveOption_RubberBandLiveOptionChannelsApart as OPTION_BITS_CHANNELS_APART,
     RubberBandLiveOption_RubberBandLiveOptionChannelsTogether as OPTION_BITS_CHANNELS_TOGETHER,
 };
+use parking_lot::Mutex;
 
 /// Window size options for [LiveShifter].
 ///
@@ -234,7 +235,7 @@ impl LiveShifterBuilder {
 
         LiveShifter {
             state,
-            process_mutex: std::sync::Mutex::new(()),
+            process_mutex: Mutex::new(()),
             sample_rate: self.sample_rate,
         }
     }
@@ -275,7 +276,7 @@ impl LiveShifterBuilder {
 /// ```
 pub struct LiveShifter {
     state: *mut rubberband_sys::RubberBandLiveState_,
-    process_mutex: std::sync::Mutex<()>,
+    process_mutex: Mutex<()>,
     sample_rate: u32,
 }
 
@@ -668,8 +669,8 @@ impl LiveShifter {
     /// - Another `process_into` or `process` call is in progress
     pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         // The underlying C++ implementation does not allow concurrent calls to `shift()`.
-        let lock = self.process_mutex.try_lock();
-        if lock.is_err() {
+        let _guard = self.process_mutex.try_lock();
+        if _guard.is_none() {
             return Err(RubberBandError::ProcessInProgress);
         }
 
