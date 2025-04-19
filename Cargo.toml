@@ -14,8 +14,11 @@ authors.workspace = true
 
 [dependencies]
 rubberband-sys = { path = "rubberband-sys" }
+
+atomic_float = "1.1.0"
 parking_lot = "0.12.3"
 thiserror = "2.0.12"
 
 [dev-dependencies]
 approx = "0.5.1"
+rand = "0.9.1"

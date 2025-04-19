@@ -1,10 +1,13 @@
+use std::sync::atomic::Ordering;
+use atomic_float::AtomicF64;
+use parking_lot::Mutex;
 use thiserror::Error;
+
 use rubberband_sys::{
     rubberband_live_new,
     rubberband_live_delete,
     rubberband_live_set_debug_level,
     rubberband_live_set_pitch_scale,
-    rubberband_live_get_pitch_scale,
     rubberband_live_set_formant_scale,
     rubberband_live_get_formant_scale,
     rubberband_live_set_formant_option,
@@ -23,7 +26,6 @@ use rubberband_sys::{
     RubberBandLiveOption_RubberBandLiveOptionChannelsApart as OPTION_BITS_CHANNELS_APART,
     RubberBandLiveOption_RubberBandLiveOptionChannelsTogether as OPTION_BITS_CHANNELS_TOGETHER,
 };
-use parking_lot::Mutex;
 
 /// Window size options for [LiveShifter].
 ///
@@ -237,6 +239,7 @@ impl LiveShifterBuilder {
             state,
             process_mutex: Mutex::new(()),
             sample_rate: self.sample_rate,
+            pitch_scale: AtomicF64::new(1.0),
         }
     }
 }
@@ -278,6 +281,7 @@ pub struct LiveShifter {
     state: *mut rubberband_sys::RubberBandLiveState_,
     process_mutex: Mutex<()>,
     sample_rate: u32,
+    pitch_scale: AtomicF64,
 }
 
 /// Error types for this crate.
@@ -329,8 +333,9 @@ impl LiveShifter {
     /// - A ratio of 0.5 shifts down by one octave
     /// - A ratio of 1.0 leaves the pitch unaffected
     ///
-    /// You should not call this function concurrently with either [Self::process()] or
-    /// [Self::process_into()].
+    /// It is safe to call this function concurrently with either [Self::process()] or
+    /// [Self::process_into()]. However, the new pitch scale will not take effect until the next
+    /// call to [Self::process()] or [Self::process_into()].
     ///
     /// # Arguments
     ///
@@ -347,9 +352,7 @@ impl LiveShifter {
     /// shifter.set_pitch_scale(2.0);
     /// ```
     pub fn set_pitch_scale(&self, scale: f64) {
-        unsafe {
-            rubberband_live_set_pitch_scale(self.state, scale);
-        }
+        self.pitch_scale.store(scale, Ordering::Relaxed);
     }
 
     /// Get the pitch scale of the [LiveShifter].
@@ -379,9 +382,7 @@ impl LiveShifter {
     /// assert_eq!(shifter.pitch_scale(), 2.0);
     /// ```
     pub fn pitch_scale(&self) -> f64 {
-        unsafe {
-            rubberband_live_get_pitch_scale(self.state)
-        }
+        self.pitch_scale.load(Ordering::Relaxed)
     }
 
     /// Set the pitch shift in semitones.
@@ -715,7 +716,9 @@ impl LiveShifter {
             .map(|slice| slice.as_mut_ptr())
             .collect();
 
+
         unsafe {
+            rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
             rubberband_live_shift(
                 self.state,
                 input_ptrs.as_ptr(),
