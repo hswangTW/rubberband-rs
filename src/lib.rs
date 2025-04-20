@@ -237,7 +237,7 @@ impl LiveShifterBuilder {
 
         LiveShifter {
             state,
-            process_mutex: Mutex::new(()),
+            operation_mutex: Mutex::new(()),
             sample_rate: self.sample_rate,
             pitch_scale: AtomicF64::new(1.0),
         }
@@ -279,7 +279,7 @@ impl LiveShifterBuilder {
 /// ```
 pub struct LiveShifter {
     state: *mut rubberband_sys::RubberBandLiveState_,
-    process_mutex: Mutex<()>,
+    operation_mutex: Mutex<()>,
     sample_rate: u32,
     pitch_scale: AtomicF64,
 }
@@ -310,9 +310,9 @@ pub enum RubberBandError {
         actual: usize,
     },
 
-    /// The process call is already in progress.
-    #[error("Process call already in progress")]
-    ProcessInProgress,
+    /// An operation (process or reset) is already in progress.
+    #[error("Operation (process or reset) already in progress")]
+    OperationInProgress,
 }
 
 impl LiveShifter {
@@ -503,10 +503,6 @@ impl LiveShifter {
         1200.0 * self.pitch_scale().log2()
     }
 
-    // TODO Check if it is safe to call `set_pitch_scale` concurrently with `shift` (RubberBand
-    //      docs don't mention this). Considering the fact that `set_formant_option` is thread-safe,
-    //      this is probably safe, too.
-
     /// Set the formant scale of the [LiveShifter].
     ///
     /// This sets a pitch scale for the vocal formant envelope separately from the overall pitch scale.
@@ -543,9 +539,6 @@ impl LiveShifter {
             rubberband_live_get_formant_scale(self.state)
         }
     }
-
-    // TODO According to the RubberBand docs, it is safe to call `set_formant_option` concurrently
-    //      with `shift`.
 
     /// Set the formant option of the [LiveShifter].
     ///
@@ -670,9 +663,9 @@ impl LiveShifter {
     /// - Another `process_into` or `process` call is in progress
     pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         // The underlying C++ implementation does not allow concurrent calls to `shift()`.
-        let _guard = self.process_mutex.try_lock();
+        let _guard = self.operation_mutex.try_lock();
         if _guard.is_none() {
-            return Err(RubberBandError::ProcessInProgress);
+            return Err(RubberBandError::OperationInProgress);
         }
 
         let channel_count = self.channel_count() as usize;
@@ -728,13 +721,16 @@ impl LiveShifter {
         Ok(())
     }
 
-    // TODO Check if it is safe to call `reset` concurrently with `shift`.
-
     /// Reset the internal state of the [LiveShifter].
     ///
     /// Note that this function would not affect the parameters. Instead, it just make the live
     /// shifter forget the previous input and output.
+    ///
+    /// It is safe to call this function even if the [Self::process()] or [Self::process_into()] is
+    /// in progress. The `reset` call will be executed after the current `process` or `process_into`
+    /// call is finished.
     pub fn reset(&self) {
+        let _guard = self.operation_mutex.lock();
         unsafe {
             rubberband_live_reset(self.state);
         }

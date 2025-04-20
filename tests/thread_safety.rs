@@ -79,8 +79,8 @@ fn test_concurrent_processing() {
 
             for _ in 0..100 {
                 let result = shifter.process(&input_slices);
-                assert!(matches!(result, Ok(_) | Err(RubberBandError::ProcessInProgress)));
-                if let Err(RubberBandError::ProcessInProgress) = result {
+                assert!(matches!(result, Ok(_) | Err(RubberBandError::OperationInProgress)));
+                if let Err(RubberBandError::OperationInProgress) = result {
                     error_count.fetch_add(1, Ordering::Relaxed);
                 }
 
@@ -144,9 +144,41 @@ fn test_set_formant_option() {
 /// Test concurrent calls to `reset` and `process`
 #[test]
 fn test_reset() {
-    test_method_concurrent_with_process(|shifter, _, _| {
-        shifter.reset();
+    let builder = LiveShifterBuilder::new(44100, 1).unwrap();
+    let shifter = Arc::new(builder.build());
+    let mut handles = vec![];
+
+    // Create a thread that keeps calling `process`
+    let shifter_ref = shifter.clone();
+    let process_handle = thread::spawn(move || {
+        let dist = Uniform::new(-1.0, 1.0).unwrap();
+        let mut rng = rand::rng();
+
+        let block_size = 512;
+        let signal: Vec<f32> = (0..block_size).map(|_| rng.sample(dist)).collect();
+        let input_slices: Vec<&[f32]> = vec![&signal];
+
+        for _ in 0..100 {
+            let result = shifter_ref.process(&input_slices);
+            assert!(matches!(result, Ok(_) | Err(RubberBandError::OperationInProgress)));
+            thread::sleep(Duration::from_millis(10));
+        }
     });
+    handles.push(process_handle);
+
+    // Create a thread that keeps calling `reset`
+    let shifter_ref = shifter.clone();
+    let method_handle = thread::spawn(move || {
+        for _ in 0..1000 {
+            shifter_ref.reset();
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+    handles.push(method_handle);
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
 }
 
 /// Test concurrent calls to `set_debug_level` and `process`
