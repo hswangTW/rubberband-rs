@@ -193,9 +193,17 @@ impl LiveShifterBuilder {
         self
     }
 
-    /// Set the debug level of the live pitch shifter.
+    /// Set the debug level of the live pitch shifter (default is 0).
     ///
-    /// For more information, see the documentation of [LiveShifter::set_debug_level].
+    /// According to the RubberBand documentation, the supported values are:
+    ///
+    /// - 0: Report errors only.
+    /// - 1: Report some information on construction and ratio change. Nothing is reported during
+    ///   normal processing unless something changes.
+    /// - 2: Report a significant amount of information about ongoing calculations during normal
+    ///   processing.
+    ///
+    /// Note that only level 0 is realtime-safe.
     ///
     /// # Arguments
     ///
@@ -733,27 +741,6 @@ impl LiveShifter {
         let _guard = self.operation_mutex.lock();
         unsafe {
             rubberband_live_reset(self.state);
-        }
-    }
-
-    /// Set the debug level of the [LiveShifter].
-    ///
-    /// According to the RubberBand documentation, the supported values are:
-    ///
-    /// - 0: Report errors only.
-    /// - 1: Report some information on construction and ratio change. Nothing is reported during
-    ///   normal processing unless something changes.
-    /// - 2: Report a significant amount of information about ongoing calculations during normal
-    ///   processing.
-    ///
-    /// Note that only level 0 is realtime-safe.
-    ///
-    /// # Arguments
-    ///
-    /// * `level`: The debug level of the live pitch shifter.
-    pub fn set_debug_level(&self, level: i32) {
-        unsafe {
-            rubberband_live_set_debug_level(self.state, level);
         }
     }
 }

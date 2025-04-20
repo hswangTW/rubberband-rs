@@ -180,11 +180,3 @@ fn test_reset() {
         handle.join().unwrap();
     }
 }
-
-/// Test concurrent calls to `set_debug_level` and `process`
-#[test]
-fn test_set_debug_level() {
-    test_method_concurrent_with_process(|shifter, i, _| {
-        shifter.set_debug_level(i as i32 % 2);
-    });
-}
