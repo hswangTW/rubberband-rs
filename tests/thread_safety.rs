@@ -1,4 +1,4 @@
-use rubberband::{LiveShifterBuilder, RubberBandError};
+use rubberband::{LiveShifterBuilder, LiveShifterFormant, RubberBandError};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -11,6 +11,9 @@ use rand::distr::Uniform;
 /// This function creates two threads:
 /// 1. One that repeatedly calls `process()`
 /// 2. Another that repeatedly calls the provided method
+///
+/// This function can only check if errors or panics occur, but it cannot detect data races or
+/// other undefined behavior.
 ///
 /// # Arguments
 /// * `method_call` - Closure that calls the method to test
@@ -95,9 +98,6 @@ fn test_concurrent_processing() {
 }
 
 /// Test concurrent calls to `set_pitch_scale` and `process`
-///
-/// This test can only check if errors or panics occur, but it cannot detect the data race, which
-/// is probably the main issue.
 #[test]
 fn test_set_pitch_scale() {
     let lower_bound = 0.5;
@@ -105,5 +105,54 @@ fn test_set_pitch_scale() {
     test_method_concurrent_with_process(move |shifter, i, num_iter| {
         let scale = lower_bound + (upper_bound - lower_bound) * i as f64 / num_iter as f64;
         shifter.set_pitch_scale(scale);
+    });
+}
+
+/// Test concurrent calls to `set_formant_scale` and `process`
+#[test]
+fn test_set_formant_scale() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let lower_bound = 0.5;
+    let upper_bound = 2.0;
+    let is_first_call: AtomicBool = AtomicBool::new(true);
+
+    test_method_concurrent_with_process(move |shifter, i, num_iter| {
+        let scale = lower_bound + (upper_bound - lower_bound) * i as f64 / num_iter as f64;
+        if is_first_call.compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed).is_ok() {
+            shifter.set_formant_option(LiveShifterFormant::Preserved);
+            shifter.set_formant_scale(scale);
+        } else {
+            shifter.set_formant_scale(scale);
+        }
+    });
+}
+
+/// Test concurrent calls to `set_formant_option` and `process`
+#[test]
+fn test_set_formant_option() {
+    test_method_concurrent_with_process(move |shifter, i, _| {
+        let option = if i % 2 == 0 {
+            LiveShifterFormant::Shifted
+        } else {
+            LiveShifterFormant::Preserved
+        };
+        shifter.set_formant_option(option);
+    });
+}
+
+/// Test concurrent calls to `reset` and `process`
+#[test]
+fn test_reset() {
+    test_method_concurrent_with_process(|shifter, _, _| {
+        shifter.reset();
+    });
+}
+
+/// Test concurrent calls to `set_debug_level` and `process`
+#[test]
+fn test_set_debug_level() {
+    test_method_concurrent_with_process(|shifter, i, _| {
+        shifter.set_debug_level(i as i32 % 2);
     });
 }
