@@ -2,6 +2,7 @@ use std::sync::atomic::Ordering;
 use atomic_float::AtomicF64;
 use parking_lot::Mutex;
 use thiserror::Error;
+use std::sync::atomic::AtomicBool;
 
 use rubberband_sys::{
     rubberband_live_new,
@@ -245,9 +246,10 @@ impl LiveShifterBuilder {
 
         LiveShifter {
             state,
-            operation_mutex: Mutex::new(()),
+            mutex: Mutex::new(()),
             sample_rate: self.sample_rate,
             pitch_scale: AtomicF64::new(1.0),
+            pitch_dirty: AtomicBool::new(false),
         }
     }
 }
@@ -271,12 +273,20 @@ impl LiveShifterBuilder {
 ///
 /// # Thread Safety
 ///
-/// Multiple instances of [LiveShifter] may be created and used in separate threads concurrently.
-/// However, for any single instance:
+/// This implementation is marked as `Send` and `Sync` with the following guarantees:
 ///
-/// - You may not call [Self::process()] or [Self::process_into()] more than once concurrently.
-/// - You may not change the pitch scaling ratio (e.g., using [Self::set_pitch_scale()]) while a
-///   process call is being executed.
+/// - Multiple instances of [LiveShifter] may be created and used in separate threads concurrently.
+///   (guaranteed by the underlying C++ library)
+/// - All methods are safe to call concurrently with either [Self::process()] or
+///   [Self::process_into()].
+///   - The safety for [Self::set_formant_scale()] and [Self::set_formant_option()] is guaranteed
+///     by the underlying C++ library.
+///   - Althought it is also safe to call either [Self::process()] or [Self::process_into()] more
+///     than once concurrently, the later calls will fail gracefully with
+///     [RubberBandError::OperationInProgress].
+///   - Calling [Self::start_delay()] concurrently with [Self::process()] or [Self::process_into()]
+///     may also fail the processing operation with [RubberBandError::OperationInProgress].
+/// - It is not guaranteed that all the methods are safe to call concurrently with each other.
 ///
 /// # Examples
 ///
@@ -287,9 +297,10 @@ impl LiveShifterBuilder {
 /// ```
 pub struct LiveShifter {
     state: *mut rubberband_sys::RubberBandLiveState_,
-    operation_mutex: Mutex<()>,
+    mutex: Mutex<()>,
     sample_rate: u32,
     pitch_scale: AtomicF64,
+    pitch_dirty: AtomicBool,
 }
 
 /// Error types for this crate.
@@ -341,9 +352,7 @@ impl LiveShifter {
     /// - A ratio of 0.5 shifts down by one octave
     /// - A ratio of 1.0 leaves the pitch unaffected
     ///
-    /// It is safe to call this function concurrently with either [Self::process()] or
-    /// [Self::process_into()]. However, the new pitch scale will not take effect until the next
-    /// call to [Self::process()] or [Self::process_into()].
+    /// It is safe to call this function concurrently with any other method.
     ///
     /// # Arguments
     ///
@@ -361,6 +370,7 @@ impl LiveShifter {
     /// ```
     pub fn set_pitch_scale(&self, scale: f64) {
         self.pitch_scale.store(scale, Ordering::Relaxed);
+        self.pitch_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Get the pitch scale of the [LiveShifter].
@@ -585,11 +595,20 @@ impl LiveShifter {
     /// This is the number of samples that one should discard at the start of the output, in order
     /// to align the output with the input.
     ///
+    /// Although it is safe to call this method concurrently with the processing methods, it may
+    /// fail the processing operation (gracefully). Therefore, it is generally not recommended to
+    /// call this method concurrently with the processing methods.
+    ///
     /// # Returns
     ///
     /// The start delay of the [LiveShifter].
     pub fn start_delay(&self) -> u32 {
+        let _guard = self.mutex.lock();
         unsafe {
+            if self.pitch_dirty.load(Ordering::Relaxed) {
+                rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
+                self.pitch_dirty.store(false, Ordering::Relaxed);
+            }
             rubberband_live_get_start_delay(self.state)
         }
     }
@@ -638,6 +657,11 @@ impl LiveShifter {
     ///
     /// - The number of input channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
+    /// - A concurrent call to any of the following methods is in progress:
+    ///   - [Self::process()]
+    ///   - [Self::process_into()]
+    ///   - [Self::start_delay()]
+    ///   - [Self::reset()]
     pub fn process(&self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
         let mut output = vec![vec![0.0; input[0].len()]; input.len()];
         let mut output_slices: Vec<&mut [f32]> = output
@@ -668,10 +692,14 @@ impl LiveShifter {
     ///
     /// - The number of input/output channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
-    /// - Another `process_into` or `process` call is in progress
+    /// - A concurrent call to any of the following methods is in progress:
+    ///   - [Self::process()]
+    ///   - [Self::process_into()]
+    ///   - [Self::start_delay()]
+    ///   - [Self::reset()]
     pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         // The underlying C++ implementation does not allow concurrent calls to `shift()`.
-        let _guard = self.operation_mutex.try_lock();
+        let _guard = self.mutex.try_lock();
         if _guard.is_none() {
             return Err(RubberBandError::OperationInProgress);
         }
@@ -719,13 +747,17 @@ impl LiveShifter {
 
 
         unsafe {
-            rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
+            if self.pitch_dirty.load(Ordering::Relaxed) {
+                rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
+                self.pitch_dirty.store(false, Ordering::Relaxed);
+            }
             rubberband_live_shift(
                 self.state,
                 input_ptrs.as_ptr(),
                 output_ptrs.as_ptr(),
             );
         }
+
         Ok(())
     }
 
@@ -738,7 +770,7 @@ impl LiveShifter {
     /// in progress. The `reset` call will be executed after the current `process` or `process_into`
     /// call is finished.
     pub fn reset(&self) {
-        let _guard = self.operation_mutex.lock();
+        let _guard = self.mutex.lock();
         unsafe {
             rubberband_live_reset(self.state);
         }

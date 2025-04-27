@@ -1,5 +1,5 @@
 use rubberband::{LiveShifterBuilder, LiveShifterFormant, RubberBandError};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -178,5 +178,57 @@ fn test_reset() {
 
     for handle in handles {
         handle.join().unwrap();
+    }
+}
+
+/// Test concurrent calls to `start_delay` and `set_pitch_scale`
+#[test]
+fn test_start_delay() {
+    let builder = LiveShifterBuilder::new(48000, 1).unwrap();
+    let shifter = Arc::new(builder.build());
+    let mut handles = vec![];
+
+    // Compute the possible start delays for different pitch scales
+    let pitch_scales: Vec<f64> = vec![0.5, 1.0, 2.0];
+    let expected_delays: Vec<u32> = vec![3648, 2112, 2880];
+
+    // Check if the set pitch scale values are reflected in the delays. (Check not all the delays
+    // are the same as the initial value 2112)
+    let delays: Vec<u32> = pitch_scales.iter().map(|&scale| {
+        shifter.set_pitch_scale(scale);
+        shifter.start_delay()
+    }).collect();
+    assert!(delays == expected_delays, "Delays are not as expected");
+
+    // Create a thread that keeps calling `start_delay`
+    let delays = Arc::new(RwLock::new(Vec::new()));
+    let delays_for_thread = delays.clone();
+    let shifter_ref = shifter.clone();
+    let start_delay_handle = thread::spawn(move || {
+        for _ in 0..1000 {
+            let delay = shifter_ref.start_delay();
+            delays_for_thread.write().unwrap().push(delay);
+        }
+    });
+    handles.push(start_delay_handle);
+
+    // Create a thread that keeps calling `set_pitch_scale`
+    let shifter_ref = shifter.clone();
+    let set_pitch_scale_handle = thread::spawn(move || {
+        for i in 0..1000 {
+            let scale = pitch_scales[i % pitch_scales.len()];
+            shifter_ref.set_pitch_scale(scale);
+        }
+    });
+    handles.push(set_pitch_scale_handle);
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Check if all the delay values are among the expected delays
+    let delays = delays.read().unwrap();
+    for delay in delays.iter() {
+        assert!(expected_delays.contains(&delay), "Delay {} not in expected delays {:?}", delay, expected_delays);
     }
 }
