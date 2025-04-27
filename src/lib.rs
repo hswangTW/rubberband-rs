@@ -1,10 +1,14 @@
+use std::sync::atomic::Ordering;
+use atomic_float::AtomicF64;
+use parking_lot::Mutex;
 use thiserror::Error;
+use std::sync::atomic::AtomicBool;
+
 use rubberband_sys::{
     rubberband_live_new,
     rubberband_live_delete,
     rubberband_live_set_debug_level,
     rubberband_live_set_pitch_scale,
-    rubberband_live_get_pitch_scale,
     rubberband_live_set_formant_scale,
     rubberband_live_get_formant_scale,
     rubberband_live_set_formant_option,
@@ -190,9 +194,17 @@ impl LiveShifterBuilder {
         self
     }
 
-    /// Set the debug level of the live pitch shifter.
+    /// Set the debug level of the live pitch shifter (default is 0).
     ///
-    /// For more information, see the documentation of [LiveShifter::set_debug_level].
+    /// According to the RubberBand documentation, the supported values are:
+    ///
+    /// - 0: Report errors only.
+    /// - 1: Report some information on construction and ratio change. Nothing is reported during
+    ///   normal processing unless something changes.
+    /// - 2: Report a significant amount of information about ongoing calculations during normal
+    ///   processing.
+    ///
+    /// Note that only level 0 is realtime-safe.
     ///
     /// # Arguments
     ///
@@ -234,7 +246,10 @@ impl LiveShifterBuilder {
 
         LiveShifter {
             state,
+            mutex: Mutex::new(()),
             sample_rate: self.sample_rate,
+            pitch_scale: AtomicF64::new(1.0),
+            pitch_dirty: AtomicBool::new(false),
         }
     }
 }
@@ -258,12 +273,20 @@ impl LiveShifterBuilder {
 ///
 /// # Thread Safety
 ///
-/// Multiple instances of [LiveShifter] may be created and used in separate threads concurrently.
-/// However, for any single instance:
+/// This implementation is marked as `Send` and `Sync` with the following guarantees:
 ///
-/// - You may not call [Self::process()] or [Self::process_into()] more than once concurrently.
-/// - You may not change the pitch scaling ratio (e.g., using [Self::set_pitch_scale()]) while a
-///   process call is being executed.
+/// - Multiple instances of [LiveShifter] may be created and used in separate threads concurrently.
+///   (guaranteed by the underlying C++ library)
+/// - All methods are safe to call concurrently with either [Self::process()] or
+///   [Self::process_into()].
+///   - The safety for [Self::set_formant_scale()] and [Self::set_formant_option()] is guaranteed
+///     by the underlying C++ library.
+///   - Althought it is also safe to call either [Self::process()] or [Self::process_into()] more
+///     than once concurrently, the later calls will fail gracefully with
+///     [RubberBandError::OperationInProgress].
+///   - Calling [Self::start_delay()] concurrently with [Self::process()] or [Self::process_into()]
+///     may also fail the processing operation with [RubberBandError::OperationInProgress].
+/// - It is not guaranteed that all the methods are safe to call concurrently with each other.
 ///
 /// # Examples
 ///
@@ -273,8 +296,11 @@ impl LiveShifterBuilder {
 /// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
 /// ```
 pub struct LiveShifter {
-    state: RubberBandLiveState,
+    state: *mut rubberband_sys::RubberBandLiveState_,
+    mutex: Mutex<()>,
     sample_rate: u32,
+    pitch_scale: AtomicF64,
+    pitch_dirty: AtomicBool,
 }
 
 /// Error types for this crate.
@@ -302,6 +328,10 @@ pub enum RubberBandError {
         expected: usize,
         actual: usize,
     },
+
+    /// An operation (process or reset) is already in progress.
+    #[error("Operation (process or reset) already in progress")]
+    OperationInProgress,
 }
 
 impl LiveShifter {
@@ -322,8 +352,7 @@ impl LiveShifter {
     /// - A ratio of 0.5 shifts down by one octave
     /// - A ratio of 1.0 leaves the pitch unaffected
     ///
-    /// You should not call this function concurrently with either [Self::process()] or
-    /// [Self::process_into()].
+    /// It is safe to call this function concurrently with any other method.
     ///
     /// # Arguments
     ///
@@ -339,10 +368,9 @@ impl LiveShifter {
     /// // Shift up by one octave
     /// shifter.set_pitch_scale(2.0);
     /// ```
-    pub fn set_pitch_scale(&mut self, scale: f64) {
-        unsafe {
-            rubberband_live_set_pitch_scale(self.state, scale);
-        }
+    pub fn set_pitch_scale(&self, scale: f64) {
+        self.pitch_scale.store(scale, Ordering::Relaxed);
+        self.pitch_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Get the pitch scale of the [LiveShifter].
@@ -372,9 +400,7 @@ impl LiveShifter {
     /// assert_eq!(shifter.pitch_scale(), 2.0);
     /// ```
     pub fn pitch_scale(&self) -> f64 {
-        unsafe {
-            rubberband_live_get_pitch_scale(self.state)
-        }
+        self.pitch_scale.load(Ordering::Relaxed)
     }
 
     /// Set the pitch shift in semitones.
@@ -403,7 +429,7 @@ impl LiveShifter {
     /// // Shift down by one semitone
     /// shifter.set_pitch_semitone(-1.0);
     /// ```
-    pub fn set_pitch_semitone(&mut self, semitones: f64) {
+    pub fn set_pitch_semitone(&self, semitones: f64) {
         let scale = 2.0f64.powf(semitones / 12.0);
         self.set_pitch_scale(scale);
     }
@@ -463,7 +489,7 @@ impl LiveShifter {
     /// // Fine-tune down by 2 cents
     /// shifter.set_pitch_cent(-2.0);
     /// ```
-    pub fn set_pitch_cent(&mut self, cents: f64) {
+    pub fn set_pitch_cent(&self, cents: f64) {
         // Convert cents to pitch ratio: ratio = 2^(cents/1200)
         let scale = 2.0f64.powf(cents / 1200.0);
         self.set_pitch_scale(scale);
@@ -495,10 +521,6 @@ impl LiveShifter {
         1200.0 * self.pitch_scale().log2()
     }
 
-    // TODO Check if it is safe to call `set_pitch_scale` concurrently with `shift` (RubberBand
-    //      docs don't mention this). Considering the fact that `set_formant_option` is thread-safe,
-    //      this is probably safe, too.
-
     /// Set the formant scale of the [LiveShifter].
     ///
     /// This sets a pitch scale for the vocal formant envelope separately from the overall pitch scale.
@@ -516,7 +538,7 @@ impl LiveShifter {
     /// # Arguments
     ///
     /// * `scale`: The formant scale of the [LiveShifter].
-    pub fn set_formant_scale(&mut self, scale: f64) {
+    pub fn set_formant_scale(&self, scale: f64) {
         unsafe {
             rubberband_live_set_formant_scale(self.state, scale);
         }
@@ -535,9 +557,6 @@ impl LiveShifter {
             rubberband_live_get_formant_scale(self.state)
         }
     }
-
-    // TODO According to the RubberBand docs, it is safe to call `set_formant_option` concurrently
-    //      with `shift`.
 
     /// Set the formant option of the [LiveShifter].
     ///
@@ -558,7 +577,7 @@ impl LiveShifter {
     /// // Change the formant option
     /// shifter.set_formant_option(LiveShifterFormant::Preserved);
     /// ```
-    pub fn set_formant_option(&mut self, option: LiveShifterFormant) {
+    pub fn set_formant_option(&self, option: LiveShifterFormant) {
         let option_bits = match option {
             LiveShifterFormant::Shifted => OPTION_BITS_FORMANT_SHIFTED,
             LiveShifterFormant::Preserved => OPTION_BITS_FORMANT_PRESERVED,
@@ -576,11 +595,20 @@ impl LiveShifter {
     /// This is the number of samples that one should discard at the start of the output, in order
     /// to align the output with the input.
     ///
+    /// Although it is safe to call this method concurrently with the processing methods, it may
+    /// fail the processing operation (gracefully). Therefore, it is generally not recommended to
+    /// call this method concurrently with the processing methods.
+    ///
     /// # Returns
     ///
     /// The start delay of the [LiveShifter].
     pub fn start_delay(&self) -> u32 {
+        let _guard = self.mutex.lock();
         unsafe {
+            if self.pitch_dirty.load(Ordering::Relaxed) {
+                rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
+                self.pitch_dirty.store(false, Ordering::Relaxed);
+            }
             rubberband_live_get_start_delay(self.state)
         }
     }
@@ -629,7 +657,12 @@ impl LiveShifter {
     ///
     /// - The number of input channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
-    pub fn process(&mut self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
+    /// - A concurrent call to any of the following methods is in progress:
+    ///   - [Self::process()]
+    ///   - [Self::process_into()]
+    ///   - [Self::start_delay()]
+    ///   - [Self::reset()]
+    pub fn process(&self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
         let mut output = vec![vec![0.0; input[0].len()]; input.len()];
         let mut output_slices: Vec<&mut [f32]> = output
             .iter_mut()
@@ -659,7 +692,18 @@ impl LiveShifter {
     ///
     /// - The number of input/output channels doesn't match the shifter's channel count
     /// - The number of samples in any channel doesn't match the shifter's block size
-    pub fn process_into(&mut self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
+    /// - A concurrent call to any of the following methods is in progress:
+    ///   - [Self::process()]
+    ///   - [Self::process_into()]
+    ///   - [Self::start_delay()]
+    ///   - [Self::reset()]
+    pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
+        // The underlying C++ implementation does not allow concurrent calls to `shift()`.
+        let _guard = self.mutex.try_lock();
+        if _guard.is_none() {
+            return Err(RubberBandError::OperationInProgress);
+        }
+
         let channel_count = self.channel_count() as usize;
         if input.len() != channel_count {
             return Err(RubberBandError::InconsistentChannelCount {
@@ -701,46 +745,34 @@ impl LiveShifter {
             .map(|slice| slice.as_mut_ptr())
             .collect();
 
+
         unsafe {
+            if self.pitch_dirty.load(Ordering::Relaxed) {
+                rubberband_live_set_pitch_scale(self.state, self.pitch_scale.load(Ordering::Relaxed));
+                self.pitch_dirty.store(false, Ordering::Relaxed);
+            }
             rubberband_live_shift(
                 self.state,
                 input_ptrs.as_ptr(),
                 output_ptrs.as_ptr(),
             );
         }
+
         Ok(())
     }
-
-    // TODO Check if it is safe to call `reset` concurrently with `shift`.
 
     /// Reset the internal state of the [LiveShifter].
     ///
     /// Note that this function would not affect the parameters. Instead, it just make the live
     /// shifter forget the previous input and output.
-    pub fn reset(&mut self) {
+    ///
+    /// It is safe to call this function even if the [Self::process()] or [Self::process_into()] is
+    /// in progress. The `reset` call will be executed after the current `process` or `process_into`
+    /// call is finished.
+    pub fn reset(&self) {
+        let _guard = self.mutex.lock();
         unsafe {
             rubberband_live_reset(self.state);
-        }
-    }
-
-    /// Set the debug level of the [LiveShifter].
-    ///
-    /// According to the RubberBand documentation, the supported values are:
-    ///
-    /// - 0: Report errors only.
-    /// - 1: Report some information on construction and ratio change. Nothing is reported during
-    ///   normal processing unless something changes.
-    /// - 2: Report a significant amount of information about ongoing calculations during normal
-    ///   processing.
-    ///
-    /// Note that only level 0 is realtime-safe.
-    ///
-    /// # Arguments
-    ///
-    /// * `level`: The debug level of the live pitch shifter.
-    pub fn set_debug_level(&mut self, level: i32) {
-        unsafe {
-            rubberband_live_set_debug_level(self.state, level);
         }
     }
 }
@@ -750,6 +782,9 @@ impl Drop for LiveShifter {
         unsafe { rubberband_live_delete(self.state) };
     }
 }
+
+unsafe impl Send for LiveShifter {}
+unsafe impl Sync for LiveShifter {}
 
 #[cfg(test)]
 mod tests {
@@ -799,7 +834,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_channels() {
-        let mut shifter = LiveShifterBuilder::new(44100, 2)
+        let shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -815,7 +850,7 @@ mod tests {
 
     #[test]
     fn test_process_invalid_block_size() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -831,7 +866,7 @@ mod tests {
 
     #[test]
     fn test_process_valid_input() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -849,7 +884,7 @@ mod tests {
 
     #[test]
     fn test_process_into() {
-        let mut shifter = LiveShifterBuilder::new(44100, 2)
+        let shifter = LiveShifterBuilder::new(44100, 2)
             .unwrap()
             .build();
 
@@ -865,7 +900,7 @@ mod tests {
 
     #[test]
     fn test_reset() {
-        let mut shifter = LiveShifterBuilder::new(44100, 1)
+        let shifter = LiveShifterBuilder::new(44100, 1)
             .unwrap()
             .build();
 
@@ -899,7 +934,7 @@ mod tests {
         let sample_rate: u32 = 44100;
 
         // Set the pitch scale to 2.0 (one octave up)
-        let mut shifter = LiveShifterBuilder::new(sample_rate, 1)
+        let shifter = LiveShifterBuilder::new(sample_rate, 1)
             .unwrap()
             .build();
         shifter.set_pitch_scale(2.0);
