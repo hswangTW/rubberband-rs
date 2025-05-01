@@ -1,3 +1,38 @@
+//! A Rust binding for the Rubber Band audio processing library.
+//!
+//! The original Rubber Band C++ library provides two different APIs:
+//!
+//! - `RubberBandStretcher`: A general-purpose time stretching and pitch shifting processor capable
+//!   of variable input/output sizes.
+//! - `RubberBandLiveShifter`: A real-time pitch shifter (no time stretching) designed for
+//!   fixed-size block processing with minimal latency.
+//!
+//! **This crate currently only implements bindings for the `RubberBandLiveShifter` API.**
+//!
+//! ## RubberBand Live Shifter
+//!
+//! The [LiveShifter] struct wraps the `RubberBandLiveShifter` C++ class. It provides
+//! realtime-safe pitch shifting suitable for live audio processing or applications where
+//! consistent block-based processing is required.
+//!
+//! Key characteristics:
+//!
+//! *   **Real-time Pitch Shifting:** Designed specifically for changing pitch without altering tempo.
+//! *   **Fixed Block Size:** Processes audio in constant-size blocks. The required block size can be
+//!     queried with [LiveShifter::block_size()]. This size is fixed for the lifetime of the shifter.
+//! *   **Inherent Latency:** While optimized for speed compared to the general stretcher, it still
+//!     introduces a processing delay (typically >50ms depending on configuration). Use
+//!     [LiveShifter::start_delay()] to get the exact latency in samples required to align input and output.
+//! *   **Configuration:** Options like window size, formant preservation, and channel processing
+//!     mode can be configured using the [LiveShifterBuilder]. Note that some options (like window
+//!     size and channel mode) cannot be changed after the shifter is built.
+//!
+//! See the [LiveShifter] and [LiveShifterBuilder] documentation for more details and usage examples.
+//!
+//! ## Future Work
+//!
+//! Bindings for the `RubberBandStretcher` API may be added in the future.
+
 use std::sync::atomic::Ordering;
 use atomic_float::AtomicF64;
 use parking_lot::Mutex;
@@ -30,7 +65,8 @@ use rubberband_sys::{
 
 /// Window size options for [LiveShifter].
 ///
-/// Note that this option cannot be changed once the [LiveShifter] instance is created.
+/// Note that this option **cannot** be changed once the [LiveShifter] instance is created.
+/// It must be set via the [LiveShifterBuilder].
 ///
 /// # Examples
 ///
@@ -52,7 +88,8 @@ pub enum LiveShifterWindow {
 
 /// Formant preservation options for [LiveShifter].
 ///
-/// This option can be set at any time.
+/// This option can be set at any time using [LiveShifter::set_formant_option()] or
+/// initially via the [LiveShifterBuilder].
 ///
 /// # Examples
 ///
@@ -77,7 +114,8 @@ pub enum LiveShifterFormant {
 
 /// Channel processing mode for [LiveShifter].
 ///
-/// This option cannot be changed once the [LiveShifter] instance is created.
+/// Note that this option **cannot** be changed once the [LiveShifter] instance is created.
+/// It must be set via the [LiveShifterBuilder].
 ///
 /// # Examples
 ///
@@ -100,6 +138,9 @@ pub enum LiveShifterChannelMode {
 }
 
 /// Builder for configuring and creating a [LiveShifter] instance.
+///
+/// Provides methods to set options like window size, formant preservation, channel processing mode,
+/// and debug level before constructing the `LiveShifter`.
 ///
 /// # Examples
 ///
@@ -137,10 +178,16 @@ pub struct LiveShifterBuilder {
 impl LiveShifterBuilder {
     /// Create a new LiveShifterBuilder.
     ///
+    /// Initializes the builder with default options:
+    /// - Window: [LiveShifterWindow::Short]
+    /// - Formant: [LiveShifterFormant::Shifted]
+    /// - Channel Mode: [LiveShifterChannelMode::Apart]
+    /// - Debug Level: 0
+    ///
     /// # Arguments
     ///
-    /// * `sample_rate`: The sample rate of the audio.
-    /// * `channels`: The number of channels of the audio.
+    /// * `sample_rate`: The sample rate of the audio (must be > 0).
+    /// * `channels`: The number of channels of the audio (must be > 0).
     pub fn new(sample_rate: u32, channels: u32) -> Result<Self, RubberBandError> {
         if sample_rate == 0 {
             return Err(RubberBandError::UnsupportedSampleRate(sample_rate));
@@ -160,7 +207,8 @@ impl LiveShifterBuilder {
 
     /// Set the window size option of [LiveShifter].
     ///
-    /// This option cannot be changed once the [LiveShifter] instance is created.
+    /// This option **cannot** be changed once the [LiveShifter] instance is created.
+    /// Defaults to [LiveShifterWindow::Short].
     ///
     /// # Arguments
     ///
@@ -172,7 +220,8 @@ impl LiveShifterBuilder {
 
     /// Set the formant preservation option of [LiveShifter].
     ///
-    /// This option can be changed even after the [LiveShifter] instance is created.
+    /// This option can be changed later using [LiveShifter::set_formant_option()].
+    /// Defaults to [LiveShifterFormant::Shifted].
     ///
     /// # Arguments
     ///
@@ -184,7 +233,8 @@ impl LiveShifterBuilder {
 
     /// Set the channel processing mode of the live pitch shifter.
     ///
-    /// This option cannot be changed once the [LiveShifter] instance is created.
+    /// This option **cannot** be changed once the [LiveShifter] instance is created.
+    /// Defaults to [LiveShifterChannelMode::Apart].
     ///
     /// # Arguments
     ///
@@ -194,17 +244,13 @@ impl LiveShifterBuilder {
         self
     }
 
-    /// Set the debug level of the live pitch shifter (default is 0).
+    /// Set the debug level of the live pitch shifter.
     ///
-    /// According to the RubberBand documentation, the supported values are:
+    /// The default is 0. The higher the level, the more verbose the output.  See the C++
+    /// documentation for `RubberBandLiveShifter::setDebugLevel` for details on the levels.
+    /// Only level 0 is guaranteed realtime-safe.
     ///
-    /// - 0: Report errors only.
-    /// - 1: Report some information on construction and ratio change. Nothing is reported during
-    ///   normal processing unless something changes.
-    /// - 2: Report a significant amount of information about ongoing calculations during normal
-    ///   processing.
-    ///
-    /// Note that only level 0 is realtime-safe.
+    /// This option cannot be changed after the shifter is built.
     ///
     /// # Arguments
     ///
@@ -214,7 +260,7 @@ impl LiveShifterBuilder {
         self
     }
 
-    /// Build the [LiveShifter] with the given options.
+    /// Build the [LiveShifter] with the configured options.
     ///
     /// # Returns
     ///
@@ -256,44 +302,77 @@ impl LiveShifterBuilder {
 
 /// A real-time pitch shifter using the RubberBand audio processing library.
 ///
-/// This is a wrapper around the C++ `RubberBandLiveShifter`, providing realtime-safe pitch
-/// shifting with several options like formant preservation. The shifter API is much simpler than
-/// the general RubberBand stretcher, which is capable of not only pitch shifting but also time
-/// stretching.
+/// This struct wraps the C++ `RubberBandLiveShifter`, providing realtime-safe pitch shifting with
+/// options like formant preservation. It processes audio in fixed-size blocks, which can be
+/// determined by [block_size()](Self::block_size()).
 ///
-/// [LiveShifter] accepts a fixed number of sample frames on each call and always returns exactly
-/// the same number of sample frames. The number of frames is fixed for the lifetime of the shifter
-/// and can be queried using [Self::block_size()].
+/// While optimized for lower latency compared to the general RubberBand stretcher, it still
+/// introduces a delay. Use [start_delay()](Self::start_delay()) to query this latency.
 ///
-/// While this shifter provides a shorter processing delay than the general stretcher, it is still
-/// not a low-latency effect, with a delay around 50 ms between input and output signals depending
-/// on configuration. The actual delay can be queried via [Self::start_delay()].
-///
-/// You should create the [LiveShifter] instance using the [LiveShifterBuilder].
+/// Create instances using the [LiveShifterBuilder].
 ///
 /// # Thread Safety
 ///
-/// This implementation is marked as `Send` and `Sync` with the following guarantees:
+/// > TL;DR:
+/// > - This wrapper guarantees that it is safe to call any method concurrently with
+/// [process](Self::process()) or [process_into](Self::process_into()) on the same instance.
+/// > - It is generally safe to call other methods concurrently, but it is not guaranteed.
 ///
-/// - Multiple instances of [LiveShifter] may be created and used in separate threads concurrently.
-///   (guaranteed by the underlying C++ library)
-/// - All methods are safe to call concurrently with either [Self::process()] or
-///   [Self::process_into()].
-///   - The safety for [Self::set_formant_scale()] and [Self::set_formant_option()] is guaranteed
-///     by the underlying C++ library.
-///   - Althought it is also safe to call either [Self::process()] or [Self::process_into()] more
-///     than once concurrently, the later calls will fail gracefully with
-///     [RubberBandError::OperationInProgress].
-///   - Calling [Self::start_delay()] concurrently with [Self::process()] or [Self::process_into()]
-///     may also fail the processing operation with [RubberBandError::OperationInProgress].
-/// - It is not guaranteed that all the methods are safe to call concurrently with each other.
+/// This type implements `Send` and `Sync`.
+///
+/// The thread safety relies on a combination of features from the underlying C++ library and
+/// synchronization primitives added in this Rust wrapper.
+///
+/// - **Instance Creation:** Multiple instances can be created and used concurrently in different
+///   threads, as guaranteed by the C++ library.
+/// - **Processing (`process`, `process_into`):** The underlying C++ `shift` function is **not**
+///   safe for concurrent calls on the same instance. This wrapper uses an internal `Mutex` to
+///   ensure that only one call to `process`, `process_into`, `reset`, or `start_delay` can execute
+///   at a time on a single `LiveShifter` instance. Concurrent calls will block or return
+///   [`OperationInProgress`](RubberBandError::OperationInProgress).
+/// - **Pitch Changes (`set_pitch_scale`, `set_pitch_semitone`, `set_pitch_cent`):** The C++
+///   `setPitchScale` function is **not** safe to call concurrently with `shift`. This wrapper
+///   uses atomic variables to store the desired pitch scale immediately without locking the main
+///   mutex, making these Rust methods safe to call concurrently. The new pitch scale will not
+///   take effect until the next `process_into` or `start_delay` call.
+/// - **Formant Changes (`set_formant_scale`, `set_formant_option`):** The underlying C++ library
+///   guarantees that `setFormantScale` and `setFormantOption` are safe to call concurrently with
+///   processing. Therefore, these Rust methods can also be called concurrently.
+/// - **State Query:**
+///   - `pitch_scale`: The thread-safety is guaranteed by this Rust wrapper.
+///   - `start_delay`: The thread-safety is guaranteed by this Rust wrapper, but it may cause the
+///     processing call to fail (gracefully) if called concurrently.
+///   - `formant_scale`, `channel_count`, `block_size`, etc.: Thread-safe in the C++ library.
+/// - **State Reset (`reset`):** These methods acquire the same internal mutex as the
+///   processing methods to ensure safe state modification or query, and are subject to the same
+///   concurrency limitations as `process`.
 ///
 /// # Examples
 ///
 /// ```
 /// use rubberband::LiveShifterBuilder;
 ///
-/// let mut shifter = LiveShifterBuilder::new(44100, 1).unwrap().build();
+/// // Create a shifter for stereo audio at 48kHz
+/// let mut shifter = LiveShifterBuilder::new(48000, 2).unwrap().build();
+///
+/// // Set pitch shift up by 2 semitones
+/// shifter.set_pitch_semitone(2.0);
+///
+/// // Get required block size
+/// let block_size = shifter.block_size() as usize;
+///
+/// // Prepare input and output buffers (example with dummy data)
+/// let input_ch1: Vec<f32> = vec![0.1; block_size];
+/// let input_ch2: Vec<f32> = vec![-0.1; block_size];
+/// let input_buffers: [&[f32]; 2] = [&input_ch1, &input_ch2];
+///
+/// let mut output_ch1: Vec<f32> = vec![0.0; block_size];
+/// let mut output_ch2: Vec<f32> = vec![0.0; block_size];
+/// let mut output_buffers: [&mut [f32]; 2] = [&mut output_ch1, &mut output_ch2];
+///
+/// // Process the audio
+/// assert!(shifter.process_into(&input_buffers, &mut output_buffers).is_ok());
+/// // Output buffers now contain the shifted audio
 /// ```
 pub struct LiveShifter {
     state: *mut rubberband_sys::RubberBandLiveState_,
@@ -346,17 +425,15 @@ impl LiveShifter {
 
     /// Set the pitch scale of the [LiveShifter].
     ///
-    /// The pitch scale is the ratio of the target frequency to the source frequency. For example:
+    /// The pitch scale is the ratio of the target frequency to the source frequency (e.g., 2.0 for
+    /// one octave up, 0.5 for one octave down, 1.0 for no change).
     ///
-    /// - A ratio of 2.0 shifts up by one octave
-    /// - A ratio of 0.5 shifts down by one octave
-    /// - A ratio of 1.0 leaves the pitch unaffected
-    ///
-    /// It is safe to call this function concurrently with any other method.
+    /// This method uses atomic operations and is safe to call concurrently with processing or
+    /// other methods. The change will take effect on the next processing call.
     ///
     /// # Arguments
     ///
-    /// * `scale`: The pitch scale of the [LiveShifter].
+    /// * `scale`: The desired pitch scale (ratio).
     ///
     /// # Examples
     ///
@@ -373,17 +450,14 @@ impl LiveShifter {
         self.pitch_dirty.store(true, Ordering::Relaxed);
     }
 
-    /// Get the pitch scale of the [LiveShifter].
+    /// Get the current target pitch scale of the [LiveShifter].
     ///
-    /// The pitch scale is the ratio of the target frequency to the source frequency. For example:
-    ///
-    /// - A ratio of 2.0 means shifted up by one octave
-    /// - A ratio of 0.5 means shifted down by one octave
-    /// - A ratio of 1.0 means no pitch shift
+    /// Note that the actual pitch scale applied during processing might slightly lag if
+    /// `set_pitch_scale` was called very recently from another thread.
     ///
     /// # Returns
     ///
-    /// The pitch scale of the [LiveShifter].
+    /// The current target pitch scale ratio.
     ///
     /// # Examples
     ///
@@ -405,16 +479,16 @@ impl LiveShifter {
 
     /// Set the pitch shift in semitones.
     ///
-    /// A positive value shifts the pitch up, while a negative value shifts it down.
-    /// One semitone is 1/12th of an octave.
+    /// A positive value shifts the pitch up, a negative value shifts it down.
+    /// This is a convenience method that calculates the appropriate scale factor and calls
+    /// [set_pitch_scale()](Self::set_pitch_scale()).
     ///
-    /// You should not call this function concurrently with either [Self::process()] or
-    /// [Self::process_into()].
+    /// This method uses atomic operations internally (via `set_pitch_scale`) and is safe to call
+    /// concurrently with processing or other methods.
     ///
     /// # Arguments
     ///
-    /// * `semitones`: The number of semitones to shift the pitch by. Positive values shift up,
-    ///                negative values shift down.
+    /// * `semitones`: The number of semitones to shift by.
     ///
     /// # Examples
     ///
@@ -436,8 +510,7 @@ impl LiveShifter {
 
     /// Get the current pitch shift in semitones.
     ///
-    /// A positive value indicates pitch shifted up, while a negative value indicates pitch shifted
-    /// down. One semitone is 1/12th of an octave.
+    /// Calculates the shift based on the current value returned by [pitch_scale()](Self::pitch_scale()).
     ///
     /// # Returns
     ///
@@ -465,16 +538,16 @@ impl LiveShifter {
 
     /// Set the pitch shift in cents.
     ///
-    /// A positive value shifts the pitch up, while a negative value shifts it down.
-    /// One cent is 1/100th of a semitone, or 1/1200th of an octave.
+    /// A positive value shifts the pitch up, a negative value shifts it down (100 cents = 1 semitone).
+    /// This is a convenience method that calculates the appropriate scale factor and calls
+    /// [set_pitch_scale()](Self::set_pitch_scale()).
     ///
-    /// You should not call this function concurrently with either [Self::process()] or
-    /// [Self::process_into()].
+    /// This method uses atomic operations internally (via `set_pitch_scale`) and is safe to call
+    /// concurrently with processing or other methods.
     ///
     /// # Arguments
     ///
-    /// * `cents`: The number of cents to shift the pitch by. Positive values shift up,
-    ///            negative values shift down.
+    /// * `cents`: The number of cents to shift by.
     ///
     /// # Examples
     ///
@@ -497,8 +570,7 @@ impl LiveShifter {
 
     /// Get the current pitch shift in cents.
     ///
-    /// A positive value indicates pitch shifted up, while a negative value indicates pitch shifted
-    /// down. One cent is 1/100th of a semitone, or 1/1200th of an octave.
+    /// Calculates the shift based on the current value returned by [pitch_scale()](Self::pitch_scale()).
     ///
     /// # Returns
     ///
@@ -523,49 +595,55 @@ impl LiveShifter {
 
     /// Set the formant scale of the [LiveShifter].
     ///
-    /// This sets a pitch scale for the vocal formant envelope separately from the overall pitch scale.
-    /// By default (when set to 0.0), the scale is calculated automatically:
+    /// This adjusts the vocal formant envelope independently of the main pitch scale.
     ///
-    /// - If formant preservation is enabled, it will be treated as 1.0 / the pitch scale
-    /// - If formant shifting is enabled, it will be treated as 1.0
+    /// - A value of `0.0` (the default) enables automatic formant scaling based on the
+    ///   [LiveShifterFormant] option:
+    ///   - `Preserved`: Scale is `1.0 / pitch_scale`.
+    ///   - `Shifted`: Scale is `1.0`.
+    /// - Setting any other value forces formant shifting with that specific scale, overriding the
+    ///   `LiveShifterFormant` option.
     ///
-    /// Setting this to a value other than 0.0 will override the automatic behavior and force formant
-    /// shifting regardless of the formant preservation option.
+    /// This is typically used for special effects. For standard formant preservation, use
+    /// [LiveShifterBuilder::formant()] or [set_formant_option()](Self::set_formant_option()) instead.
     ///
-    /// This function is provided for special effects only. You do not need to call it for ordinary
-    /// pitch shifting - just use the formant preservation option as appropriate.
+    /// This method is thread-safe and can be called concurrently with processing.
     ///
     /// # Arguments
     ///
-    /// * `scale`: The formant scale of the [LiveShifter].
+    /// * `scale`: The desired formant scale, or `0.0` for automatic behavior.
     pub fn set_formant_scale(&self, scale: f64) {
         unsafe {
             rubberband_live_set_formant_scale(self.state, scale);
         }
     }
 
-    /// Get the formant scale of the [LiveShifter].
+    /// Get the currently set formant scale of the [LiveShifter].
     ///
-    /// Returns the last formant scaling ratio that was set with `set_formant_scale()`, or 0.0 if
-    /// the default automatic scaling is in effect.
+    /// Returns `0.0` if automatic scaling (based on the [LiveShifterFormant] option) is active.
+    /// Otherwise, returns the value explicitly set by [set_formant_scale()](Self::set_formant_scale()).
+    ///
+    /// This method is thread-safe.
     ///
     /// # Returns
     ///
-    /// The formant scale of the [LiveShifter].
+    /// The explicitly set formant scale, or `0.0` for automatic.
     pub fn formant_scale(&self) -> f64 {
         unsafe {
             rubberband_live_get_formant_scale(self.state)
         }
     }
 
-    /// Set the formant option of the [LiveShifter].
+    /// Set the formant preservation option of the [LiveShifter].
     ///
-    /// It is safe to call this function even if the [Self::process()] or [Self::process_into()] is
-    /// running.
+    /// Allows changing whether formants are shifted with the pitch or preserved after the
+    /// shifter has been created.
+    ///
+    /// This method is thread-safe and can be called concurrently with processing.
     ///
     /// # Arguments
     ///
-    /// * `option`: The formant option of the [LiveShifter].
+    /// * `option`: The desired [LiveShifterFormant] option.
     ///
     /// # Examples
     ///
@@ -590,18 +668,20 @@ impl LiveShifter {
         }
     }
 
-    /// Get the start delay (in samples) of the [LiveShifter].
+    /// Get the start delay (in samples per channel) of the [LiveShifter].
     ///
-    /// This is the number of samples that one should discard at the start of the output, in order
-    /// to align the output with the input.
+    /// This indicates how many samples should be discarded from the beginning of the output
+    /// to align it temporally with the input signal. The delay depends on the sample rate,
+    /// window settings, and the pitch scale.
     ///
-    /// Although it is safe to call this method concurrently with the processing methods, it may
-    /// fail the processing operation (gracefully). Therefore, it is generally not recommended to
-    /// call this method concurrently with the processing methods.
+    /// **Note:** This method acquires the internal processing lock. Calling it concurrently with
+    /// [process()](Self::process()) or [process_into()](Self::process_into()) on the same instance
+    /// will block or may cause the processing call to fail with [RubberBandError::OperationInProgress].
+    /// It's best to call this when the shifter is idle or from the same thread that calls process.
     ///
     /// # Returns
     ///
-    /// The start delay of the [LiveShifter].
+    /// The start delay in samples per channel.
     pub fn start_delay(&self) -> u32 {
         let _guard = self.mutex.lock();
         unsafe {
@@ -613,55 +693,58 @@ impl LiveShifter {
         }
     }
 
-    /// Get the number of channels of the [LiveShifter].
+    /// Get the number of channels the [LiveShifter] was configured for.
+    ///
+    /// This method is thread-safe.
     ///
     /// # Returns
     ///
-    /// The number of channels of the [LiveShifter].
+    /// The number of audio channels.
     pub fn channel_count(&self) -> u32 {
         unsafe {
             rubberband_live_get_channel_count(self.state)
         }
     }
 
-    /// Get the block size (in samples) of the [LiveShifter].
+    /// Get the required block size (in samples per channel) for processing.
+    ///
+    /// Both [process()](Self::process()) and [process_into()](Self::process_into()) require input
+    /// buffers and produce output buffers of exactly this size for each channel.
+    /// This value is fixed for the lifetime of the shifter instance.
+    ///
+    /// This method is thread-safe.
     ///
     /// # Returns
     ///
-    /// The block size of the [LiveShifter].
+    /// The required block size in samples per channel.
     pub fn block_size(&self) -> u32 {
         unsafe {
             rubberband_live_get_block_size(self.state)
         }
     }
 
-    /// Process a single block of audio samples.
+    /// Process a single block of audio samples, allocating and returning the output.
     ///
-    /// An output buffer will be automatically allocated and returned.
+    /// This is a convenience wrapper around [process_into()](Self::process_into()).
     ///
     /// # Arguments
     ///
-    /// * `input`: A slice of slices of floats, each containing a contiguous block of audio
-    ///            samples for a single channel. The number of channels must be equal to the number
-    ///            of channels of the [LiveShifter]. Each channel must have the same number of
-    ///            samples.
+    /// * `input`: A slice of slices (`&[&[f32]]`), where each inner slice represents one channel
+    ///            of audio data.
+    ///   - The number of inner slices must equal [channel_count()](Self::channel_count()).
+    ///   - The length of each inner slice must equal [block_size()](Self::block_size()).
     ///
     /// # Returns
     ///
-    /// A vector of vectors of floats, each containing a contiguous block of audio samples for a
-    /// single channel. The number of samples per channel will be equal to `block_size()`.
+    /// A `Vec<Vec<f32>>` containing the processed audio data, with the same channel count and
+    /// block size as the input.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    ///
-    /// - The number of input channels doesn't match the shifter's channel count
-    /// - The number of samples in any channel doesn't match the shifter's block size
-    /// - A concurrent call to any of the following methods is in progress:
-    ///   - [Self::process()]
-    ///   - [Self::process_into()]
-    ///   - [Self::start_delay()]
-    ///   - [Self::reset()]
+    /// Returns [RubberBandError] if:
+    /// - Input channel count or block size is incorrect ([`InconsistentChannelCount`](RubberBandError::InconsistentChannelCount), [`InconsistentBlockSize`](RubberBandError::InconsistentBlockSize)).
+    /// - A concurrent call to `process`, `process_into`, `reset`, or `start_delay` is in progress
+    ///   on the same instance ([`OperationInProgress`](RubberBandError::OperationInProgress)).
     pub fn process(&self, input: &[&[f32]]) -> Result<Vec<Vec<f32>>, RubberBandError> {
         let mut output = vec![vec![0.0; input[0].len()]; input.len()];
         let mut output_slices: Vec<&mut [f32]> = output
@@ -672,31 +755,28 @@ impl LiveShifter {
         Ok(output)
     }
 
-    /// Process a single block of audio samples with pre-allocated buffers.
+    /// Process a single block of audio samples using pre-allocated output buffers.
     ///
-    /// The input and output buffers must not alias one another or overlap.
+    /// This is the primary processing method and avoids allocations. It wraps the underlying
+    /// `shift` C++ method, adding checks and handling pitch scale updates.
+    ///
+    /// The input and output buffers must not alias or overlap.
     ///
     /// # Arguments
     ///
-    /// * `input`: A slice of slices of floats, each containing a contiguous block of audio
-    ///            samples for a single channel. The number of channels must be equal to the number
-    ///            of channels of the [LiveShifter]. Each channel must have the same number of
-    ///            samples.
-    ///
-    /// * `output`: A slice of slices of floats, should have the same shape as the input. Each
-    ///             channel must have exactly the same number of samples as the shifter's block size.
+    /// * `input`: A slice of slices (`&[&[f32]]`) representing the input audio block.
+    ///   - Must have `channel_count` inner slices.
+    ///   - Each inner slice must have `block_size` samples.
+    /// * `output`: A mutable slice of mutable slices (`&mut [&mut [f32]]`) for the output.
+    ///   - Must have `channel_count` inner slices.
+    ///   - Each inner slice must have `block_size` samples. The contents will be overwritten.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    ///
-    /// - The number of input/output channels doesn't match the shifter's channel count
-    /// - The number of samples in any channel doesn't match the shifter's block size
-    /// - A concurrent call to any of the following methods is in progress:
-    ///   - [Self::process()]
-    ///   - [Self::process_into()]
-    ///   - [Self::start_delay()]
-    ///   - [Self::reset()]
+    /// Returns [RubberBandError] if:
+    /// - Input/output channel count or block size is incorrect ([`InconsistentChannelCount`](RubberBandError::InconsistentChannelCount), [`InconsistentBlockSize`](RubberBandError::InconsistentBlockSize)).
+    /// - A concurrent call to `process`, `process_into`, `reset`, or `start_delay` is in progress
+    ///   on the same instance ([`OperationInProgress`](RubberBandError::OperationInProgress)).
     pub fn process_into(&self, input: &[&[f32]], output: &mut [&mut [f32]]) -> Result<(), RubberBandError> {
         // The underlying C++ implementation does not allow concurrent calls to `shift()`.
         let _guard = self.mutex.try_lock();
@@ -763,12 +843,12 @@ impl LiveShifter {
 
     /// Reset the internal state of the [LiveShifter].
     ///
-    /// Note that this function would not affect the parameters. Instead, it just make the live
-    /// shifter forget the previous input and output.
+    /// This clears the internal buffers and history, effectively making the shifter behave as if
+    /// it were newly created, but retaining all parameter settings (pitch scale, formant options, etc.).
     ///
-    /// It is safe to call this function even if the [Self::process()] or [Self::process_into()] is
-    /// in progress. The `reset` call will be executed after the current `process` or `process_into`
-    /// call is finished.
+    /// **Note:** This method acquires the internal processing lock. Calling it concurrently with
+    /// [process()](Self::process()) or [process_into()](Self::process_into()) on the same instance
+    /// will block.
     pub fn reset(&self) {
         let _guard = self.mutex.lock();
         unsafe {

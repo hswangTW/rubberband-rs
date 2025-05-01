@@ -1,39 +1,41 @@
 # rubberband-rs
 
-A Rust binding for [Rubber Band](https://breakfastquay.com/rubberband/), a high-quality library for audio time-stretching and pitch-shifting. This crate is still under development.
+A Rust binding for [Rubber Band](https://breakfastquay.com/rubberband/), a high-quality library for audio time-stretching and pitch-shifting.
 
 ## Current Status
 
-This crate currently provides a binding for the `RubberBandLiveShifter` API only. The more general `RubberBandStretcher` API, which supports both time-stretching and pitch-shifting, is not yet implemented.
+This crate currently provides bindings for the `RubberBandLiveShifter` API only. The `LiveShifter` provides real-time pitch shifting with fixed block sizes and inherent latency. The bindings aim to be safe and idiomatic Rust.
 
-> [!NOTE]
->
-> Currently, it is still not possible to use `LiveShifter` in multiple threads concurrently. The `Send` and `Sync` traits would be implemented after the thread-safety of `LiveShifter` is ensured.
+The more general `RubberBandStretcher` API, which supports both time-stretching and pitch-shifting with variable I/O sizes, is not yet implemented.
 
 ## Features
 
-### Original Rubber Band Features
+### Original Rubber Band Live Shifter Features
 
-- High-quality and real-time safe pitch shifting algorithm
-- Formant preservation for natural-sounding pitch shifts (without changing the timbre)
-- Configurable window size options for different latency/quality trade-offs
-- Channel processing modes for stereo image/fidelity trade-offs
-- (TODO) Thread safety for multiple instances in separate threads
+- High-quality real-time pitch shifting algorithm.
+- Formant preservation for natural-sounding pitch shifts (preserving timbre).
+- Configurable window size options (`Short`, `Medium`) for latency/quality trade-offs.
+- Channel processing modes (`Apart`, `Together`) for stereo image/fidelity trade-offs.
+- Thread safety allows multiple `LiveShifter` instances to be used concurrently in separate threads.
 
-### Rust Binding Features
+### Rust Binding Features (`LiveShifter`)
 
-- Safe and idiomatic Rust API
-- Builder pattern for easy configuration
-- Support setting pitch shift amount in semitones or cents
-- Comprehensive error handling
-- (TODO) Thread-safe parameter changes while processing
+- Safe and idiomatic Rust API (`LiveShifter`, `LiveShifterBuilder`).
+- Builder pattern for easy configuration.
+- Support setting pitch shift amount in semitones or cents.
+- Comprehensive error handling (`RubberBandError`).
+- Thread-safe implementation (`Send + Sync`).
+  - `set_pitch_scale` can be safely called concurrently with processing. (This may cause a crash in the original library.)
+  - Processing calls (`process`, `process_into`) on the *same instance* are made mutually exclusive; concurrent calls will immediately return an `OperationInProgress` error instead of blocking.
+  - See the `LiveShifter` documentation's "Thread Safety" section for detailed guarantees.
 
 ## Usage
 
 ```rust
 use rubberband::{LiveShifterBuilder, LiveShifterFormant, LiveShifterWindow};
 
-// Create a pitch shifter with formant preservation
+// Create a pitch shifter for stereo audio at 44.1kHz
+// Use medium window and enable formant preservation
 let mut shifter = LiveShifterBuilder::new(44100, 2)
     .unwrap()
     .window(LiveShifterWindow::Medium)
@@ -43,25 +45,46 @@ let mut shifter = LiveShifterBuilder::new(44100, 2)
 // Shift up by 3 semitones
 shifter.set_pitch_semitone(3.0);
 
-// Process audio blocks
+// Get the required block size for processing
 let block_size = shifter.block_size() as usize;
-let input = vec![vec![0.0f32; block_size], vec![0.0f32; block_size]];
-let input_slices: Vec<&[f32]> = input.iter().map(|v| v.as_slice()).collect();
-let output = shifter.process(&input_slices).unwrap();
+
+// Prepare input buffers (example with dummy data)
+let input_ch1: Vec<f32> = vec![0.1; block_size];
+let input_ch2: Vec<f32> = vec![-0.1; block_size];
+let input_buffers: [&[f32]; 2] = [&input_ch1, &input_ch2];
+
+// Prepare output buffers (pre-allocate for performance)
+let mut output_ch1: Vec<f32> = vec![0.0; block_size];
+let mut output_ch2: Vec<f32> = vec![0.0; block_size];
+let mut output_buffers: [&mut [f32]; 2] = [&mut output_ch1, &mut output_ch2];
+
+// Process audio using pre-allocated output buffers (avoids allocation)
+match shifter.process_into(&input_buffers, &mut output_buffers) {
+    Ok(()) => { /* output_buffers now contain shifted audio */ }
+    Err(e) => eprintln!("Error processing audio: {}", e),
+}
+
+// Alternatively, use `process` which allocates the output buffer (convenient but less performant)
+// let result = shifter.process(&input_buffers);
+// match result {
+//     Ok(output_vecs) => { /* output_vecs contains shifted audio */ },
+//     Err(e) => eprintln!("Error processing audio: {}", e),
+// }
 ```
 
 ## Performance Considerations
 
-Although `LiveShifter` has a lower latency than the general `RubberBandStretcher`, it is not a low-latency effect, with a delay of about 50 ms between input and output signals depending on configuration. The actual delay can be queried via `start_delay()`
+Although `LiveShifter` is optimized for lower latency compared to the general `RubberBandStretcher`, it is **not** a zero-latency effect. It introduces a processing delay (typically >50ms depending on configuration) between the input and the corresponding output. The exact delay in samples can be queried via `LiveShifter::start_delay()`. Use this value to compensate for the latency if needed.
+
+For performance-critical code, prefer using `process_into` with pre-allocated buffers to avoid allocations during processing.
 
 ## To-do
 
-- [ ] Make `LiveShifter` thread-safe.
-- [ ] Implement `Stretcher` struct for `RubberBandStretcher` class.
-- [ ] Add tests for `Stretcher`.
+- [ ] Implement `Stretcher` struct for the `RubberBandStretcher` C++ class.
+- [ ] Add comprehensive tests for the `Stretcher` implementation.
 
 ## License
 
-This project is licensed under the GNU General Public License v2.0 or later. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU General Public License v2.0 or later**. See the [LICENSE](LICENSE) file for details.
 
 Note that this is a binding to the [Rubber Band](https://breakfastquay.com/rubberband/) library, which is also licensed under the GNU General Public License v2.0 or later.
