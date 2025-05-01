@@ -8,6 +8,23 @@ This crate currently provides bindings for the `RubberBandLiveShifter` API only.
 
 The more general `RubberBandStretcher` API, which supports both time-stretching and pitch-shifting with variable I/O sizes, is not yet implemented.
 
+## Installation
+
+As this crate is not yet published on crates.io, you need to add it as a git dependency in your `Cargo.toml`. It is highly recommended to pin it to a specific tag or commit hash for reproducible builds:
+
+```toml
+[dependencies]
+rubberband = { git = "https://github.com/hswangTW/rubberband-rs.git", tag = "v0.2.0" }
+```
+
+### Build Requirements
+
+The underlying `rubberband-sys` crate automatically builds the required version of the Rubber Band C++ library using its provided single-file source (`RubberBandSingle.cpp`). This means you do **not** need to install Rubber Band separately, nor do you need CMake or any other build system. However, you will still need a compatible **C++ compiler** (like Clang or GCC) installed on your system for the build process to succeed.
+
+> [!NOTE]
+>
+> Currently, this crate and its build process have been tested primarily on macOS Sonoma 14.5 (Apple Silicon M3).
+
 ## Features
 
 ### Original Rubber Band Live Shifter Features
